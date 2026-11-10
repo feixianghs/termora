@@ -35,12 +35,21 @@ class TerminalTabbed(
     private val dataProviderSupport = DataProviderSupport()
     private val appearance get() = DatabaseManager.getInstance().appearance
     private val titleProperty = randomUUID()
+    private var selectionUpdateDepth = 0
+    private var focusedTab: TerminalTab? = null
+    private val splitLayout = TerminalSplitLayout(
+        ::getTabTitle,
+        ::setSelectedTerminalTab,
+        { closeTerminalTab(it) },
+        { tab, invoker -> showContextMenu(tabs.indexOf(tab), invoker, 0, invoker.height) },
+    )
     private val iconListener = PropertyChangeListener { e ->
         val source = e.source
         if (e.propertyName == "icon" && source is TerminalTab) {
             val index = tabs.indexOf(source)
             if (index >= 0) {
                 tabbedPane.setIconAt(index, source.getIcon())
+                splitLayout.refresh(source)
             }
         }
     }
@@ -71,21 +80,22 @@ class TerminalTabbed(
         tabbedPane.setTabCloseCallback { _, i -> removeTabAt(i, true) }
 
         // 选中变动
-        tabbedPane.addPropertyChangeListener("selectedIndex") { evt ->
-            val oldIndex = evt.oldValue as Int
-            val newIndex = evt.newValue as Int
+        tabbedPane.addChangeListener { syncSelection() }
 
-            if (oldIndex >= 0 && tabs.size > newIndex) {
-                tabs[oldIndex].onLostFocus()
+        val focusManager = KeyboardFocusManager.getCurrentKeyboardFocusManager()
+        val focusListener = PropertyChangeListener { event ->
+            if (selectionUpdateDepth == 0) {
+                val component = event.newValue as? Component
+                val tab = component?.let { splitLayout.findTab(it) }
+                if (tab != null && tab !== getSelectedTerminalTab()) setSelectedTerminalTab(tab)
             }
-
-            tabbedPane.getComponentAt(newIndex).requestFocusInWindow()
-
-            if (newIndex >= 0 && tabs.size > newIndex) {
-                tabs[newIndex].onGrabFocus()
-            }
-
         }
+        focusManager.addPropertyChangeListener("permanentFocusOwner", focusListener)
+        Disposer.register(this, object : Disposable {
+            override fun dispose() {
+                focusManager.removePropertyChangeListener("permanentFocusOwner", focusListener)
+            }
+        })
 
 
         // 右键菜单
@@ -98,7 +108,7 @@ class TerminalTabbed(
                 val index = tabbedPane.indexAtLocation(e.x, e.y)
                 if (index < 0) return
 
-                showContextMenu(index, e)
+                showContextMenu(index, e.component, e.x, e.y)
             }
         })
 
@@ -110,8 +120,8 @@ class TerminalTabbed(
                         if (scope != windowScope) return emptyList()
                         val results = mutableListOf<FindEverywhereResult>()
                         for (i in 0 until tabbedPane.tabCount) {
-                            val c = tabbedPane.getComponentAt(i)
-                            if (c is JComponent && c.getClientProperty(FindEverywhereProvider.SKIP_FIND_EVERYWHERE) != null) {
+                            val c = tabs[i].getJComponent()
+                            if (c.getClientProperty(FindEverywhereProvider.SKIP_FIND_EVERYWHERE) != null) {
                                 continue
                             }
                             results.add(
@@ -142,7 +152,7 @@ class TerminalTabbed(
     }
 
     private fun removeTabAt(index: Int, disposable: Boolean = true, reconnect: Boolean = false) {
-        if (tabbedPane.isTabClosable(index)) {
+        if (index in tabs.indices && tabbedPane.isTabClosable(index)) {
             val tab = tabs[index]
 
             // 询问是否可以关闭
@@ -175,22 +185,19 @@ class TerminalTabbed(
                 }
             }
 
-            tab.onLostFocus()
             tab.removePropertyChangeListener(iconListener)
-
-            // remove tab
-            tabbedPane.removeTabAt(index)
-
-            // remove ele
-            tabs.removeAt(index)
-
-            if (tabbedPane.tabCount > 0) {
-                // 新的获取到焦点
-                tabs[tabbedPane.selectedIndex].onGrabFocus()
-
-                // 新的真正获取焦点
-                tabbedPane.getComponentAt(tabbedPane.selectedIndex).requestFocusInWindow()
+            val selected = getSelectedTerminalTab()
+            selectionUpdateDepth++
+            try {
+                val neighbour = splitLayout.remove(tab)
+                tabs.removeAt(index)
+                tabbedPane.removeTabAt(index)
+                val next = if (selected === tab) neighbour else selected
+                if (next != null && next in tabs) tabbedPane.selectedIndex = tabs.indexOf(next)
+            } finally {
+                selectionUpdateDepth--
             }
+            syncSelection()
 
             if (disposable) {
                 Disposer.dispose(tab)
@@ -198,9 +205,10 @@ class TerminalTabbed(
         }
     }
 
-    private fun showContextMenu(tabIndex: Int, e: MouseEvent) {
-        val c = tabbedPane.getComponentAt(tabIndex) as JComponent
+    private fun showContextMenu(tabIndex: Int, invoker: Component, x: Int, y: Int) {
+        if (tabIndex !in tabs.indices) return
         val tab = tabs[tabIndex]
+        val c = tab.getJComponent()
         val extensions = ExtensionManager.getInstance().getExtensions(TerminalTabbedContextMenuExtension::class.java)
         val menuItems = mutableListOf<JMenuItem>()
         for (extension in extensions) {
@@ -225,6 +233,7 @@ class TerminalTabbed(
                 if (!text.isNullOrBlank()) {
                     tabbedPane.setTitleAt(tabIndex, text)
                     c.putClientProperty(titleProperty, text)
+                    splitLayout.refresh(tab)
                 }
             }
 
@@ -238,6 +247,10 @@ class TerminalTabbed(
                     .getAction(OpenHostAction.OPEN_HOST)
                     .actionPerformed(OpenHostActionEvent(this, tab.host, evt, tabIndex + 1))
             }
+        }
+
+        if (canSplitTerminalTab(tab)) {
+            popupMenu.add(createSplitMenu(tab))
         }
 
         // 编辑
@@ -332,30 +345,107 @@ class TerminalTabbed(
             reconnect.isEnabled = tabs[tabIndex].canReconnect()
         }
 
-        popupMenu.show(this, e.x, e.y)
+        popupMenu.show(invoker, x, y)
     }
 
+    private fun getTabTitle(tab: TerminalTab): String =
+        (tab.getJComponent().getClientProperty(titleProperty) ?: tab.getTitle()).toString()
+
+    private fun syncSelection() {
+        if (selectionUpdateDepth > 0) return
+        val tab = getSelectedTerminalTab()
+        if (focusedTab !== tab) {
+            focusedTab?.onLostFocus()
+            focusedTab = tab
+            tab?.onGrabFocus()
+        }
+        if (tab == null) return
+        val focusOwner = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
+        val focusTarget = if (focusOwner != null && splitLayout.findTab(focusOwner) === tab) focusOwner
+        else tab.getJComponent()
+        splitLayout.show(tab)
+        SwingUtilities.invokeLater {
+            if (getSelectedTerminalTab() === tab && focusTarget.isShowing) focusTarget.requestFocusInWindow()
+        }
+    }
+
+    private fun canSplitTerminalTab(tab: TerminalTab) =
+        tab.canClose() && tab.getData(DataProviders.TerminalPanel) != null
+
+    private fun createSplitMenu(tab: TerminalTab): JMenu {
+        val menu = JMenu(I18n.getString("termora.tabbed.split")).apply { icon = Icons.split }
+        for ((orientation, direction) in listOf(JSplitPane.HORIZONTAL_SPLIT to "right", JSplitPane.VERTICAL_SPLIT to "down")) {
+            menu.add(JMenuItem(I18n.getString("termora.tabbed.split.$direction")).apply {
+                isEnabled = tab is HostTerminalTab && tab.canClone()
+                addActionListener { event ->
+                    if (tab is HostTerminalTab && tab in tabs) {
+                        val before = tabs.toSet()
+                        actionManager.getAction(OpenHostAction.OPEN_HOST).actionPerformed(
+                            OpenHostActionEvent(this@TerminalTabbed, tab.host, event, tabs.indexOf(tab) + 1)
+                        )
+                        val created = tabs.firstOrNull { it !in before }
+                        if (created != null) splitTerminalTab(tab, created, orientation)
+                    }
+                }
+            })
+            val existing = JMenu(I18n.getString("termora.tabbed.split.$direction-existing"))
+            val group = splitLayout.groupTabs(tab)
+            for (other in tabs.filter { it !in group && canSplitTerminalTab(it) }) {
+                existing.add(JMenuItem("${tabs.indexOf(other) + 1}. ${getTabTitle(other)}", other.getIcon()).apply {
+                    addActionListener { splitTerminalTab(tab, other, orientation) }
+                })
+            }
+            existing.isEnabled = existing.itemCount > 0
+            menu.add(existing)
+        }
+        menu.addSeparator()
+        menu.add(JMenuItem(I18n.getString("termora.tabbed.split.restore")).apply {
+            isEnabled = splitLayout.groupTabs(tab).size > 1
+            addActionListener { unsplitTerminalTab(tab) }
+        })
+        return menu
+    }
+
+    fun splitTerminalTab(target: TerminalTab, tab: TerminalTab, orientation: Int): Boolean {
+        if (!canSplitTerminalTab(target) || !canSplitTerminalTab(tab)) return false
+        selectionUpdateDepth++
+        val changed: Boolean
+        try {
+            changed = splitLayout.split(target, tab, orientation)
+            if (changed) tabbedPane.selectedIndex = tabs.indexOf(tab)
+        } finally {
+            selectionUpdateDepth--
+        }
+        syncSelection()
+        return changed
+    }
+
+    fun unsplitTerminalTab(tab: TerminalTab) {
+        selectionUpdateDepth++
+        try {
+            splitLayout.unsplit(tab)
+        } finally {
+            selectionUpdateDepth--
+        }
+        setSelectedTerminalTab(tab)
+    }
 
     private fun addTab(index: Int, tab: TerminalTab, selected: Boolean) {
         val c = tab.getJComponent()
-        val title = (c.getClientProperty(titleProperty) ?: tab.getTitle()).toString()
-
-        tabbedPane.insertTab(title, tab.getIcon(), c, StringUtils.EMPTY, index)
-
-        // 设置标题
-        c.putClientProperty(titleProperty, title)
-        // 监听 icons 变化
-        tab.addPropertyChangeListener(iconListener)
-
-        tabs.add(index, tab)
-
-        if (selected) {
-            tabbedPane.selectedIndex = index
+        val title = getTabTitle(tab)
+        selectionUpdateDepth++
+        try {
+            c.putClientProperty(titleProperty, title)
+            tab.addPropertyChangeListener(iconListener)
+            tabs.add(index, tab)
+            tabbedPane.insertTab(title, tab.getIcon(), splitLayout.add(tab), StringUtils.EMPTY, index)
+            if (selected) tabbedPane.selectedIndex = index
+            tabbedPane.setTabClosable(index, tab.canClose())
+            Disposer.register(this, tab)
+        } finally {
+            selectionUpdateDepth--
         }
-
-        tabbedPane.setTabClosable(index, tab.canClose())
-
-        Disposer.register(this, tab)
+        syncSelection()
     }
 
     override fun refreshTerminalTabs() {
@@ -365,7 +455,7 @@ class TerminalTabbed(
     }
 
     override fun indexOfTerminalTab(tab: TerminalTab): Int {
-        return tabbedPane.indexOfComponent(tab.getJComponent())
+        return tabs.indexOf(tab)
     }
 
     private inner class SwitchFindEverywhereResult(
@@ -433,12 +523,7 @@ class TerminalTabbed(
     }
 
     override fun getSelectedTerminalTab(): TerminalTab? {
-        val index = tabbedPane.selectedIndex
-        if (index == -1) {
-            return null
-        }
-
-        return tabs[index]
+        return tabs.getOrNull(tabbedPane.selectedIndex)
     }
 
     override fun getTerminalTabs(): List<TerminalTab> {
@@ -446,12 +531,36 @@ class TerminalTabbed(
     }
 
     override fun setSelectedTerminalTab(tab: TerminalTab) {
-        for (index in tabs.indices) {
-            if (tabs[index] == tab) {
-                tabbedPane.selectedIndex = index
-                break
-            }
+        val index = tabs.indexOf(tab)
+        if (index < 0) return
+        selectionUpdateDepth++
+        try {
+            tabbedPane.selectedIndex = index
+        } finally {
+            selectionUpdateDepth--
         }
+        syncSelection()
+    }
+
+    override fun replaceTerminalTab(tab: TerminalTab, replacement: TerminalTab) {
+        val index = tabs.indexOf(tab)
+        if (index < 0) return
+        tab.beforeClose()
+        selectionUpdateDepth++
+        try {
+            tab.removePropertyChangeListener(iconListener)
+            replacement.addPropertyChangeListener(iconListener)
+            replacement.getJComponent().putClientProperty(titleProperty, getTabTitle(tab))
+            splitLayout.replace(tab, replacement)
+            tabs[index] = replacement
+            tabbedPane.setIconAt(index, replacement.getIcon())
+            tabbedPane.setTabClosable(index, replacement.canClose())
+            Disposer.register(this, replacement)
+        } finally {
+            selectionUpdateDepth--
+        }
+        syncSelection()
+        Disposer.dispose(tab)
     }
 
     override fun closeTerminalTab(tab: TerminalTab, disposable: Boolean, reconnect: Boolean) {

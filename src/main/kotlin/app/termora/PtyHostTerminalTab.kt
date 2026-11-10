@@ -178,8 +178,7 @@ abstract class PtyHostTerminalTab(
         if (index < 0) return
 
         val tab = createReconnectTerminalTab()
-        manager.addTerminalTab(index, tab, true)
-        manager.closeTerminalTab(this, disposable = true, reconnect = true)
+        manager.replaceTerminalTab(this, tab)
 
         if (tab is HostTerminalTab) {
             tab.start()

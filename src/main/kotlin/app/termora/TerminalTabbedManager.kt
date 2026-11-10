@@ -9,4 +9,11 @@ interface TerminalTabbedManager {
     fun closeTerminalTab(tab: TerminalTab, disposable: Boolean = true, reconnect: Boolean = false)
     fun refreshTerminalTabs()
     fun indexOfTerminalTab(tab: TerminalTab): Int
+
+    fun replaceTerminalTab(tab: TerminalTab, replacement: TerminalTab) {
+        val index = indexOfTerminalTab(tab)
+        if (index < 0) return
+        addTerminalTab(index, replacement)
+        closeTerminalTab(tab, reconnect = true)
+    }
 }
