@@ -70,7 +70,7 @@ tasks.register<JavaExec>("run-plugin") {
     workingDir = rootProject.layout.projectDirectory.asFile
 
     systemProperty("app-version", rootProjectVersion)
-    jvmArgs("--add-exports=java.base/sun.nio.ch=ALL-UNNAMED")
+    jvmArgs("--enable-native-access=ALL-UNNAMED", "--add-exports=java.base/sun.nio.ch=ALL-UNNAMED")
     if (os.isMacOsX) {
         // NSWindow
         jvmArgs(

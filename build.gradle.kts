@@ -6,10 +6,9 @@ import org.gradle.nativeplatform.platform.internal.DefaultNativePlatform
 import org.jetbrains.kotlin.org.apache.commons.io.FileUtils
 import org.jetbrains.kotlin.org.apache.commons.io.filefilter.FileFilterUtils
 import org.jetbrains.kotlin.org.apache.commons.lang3.StringUtils
-import org.jetbrains.kotlin.org.apache.commons.lang3.time.DateFormatUtils
 import java.io.FileNotFoundException
 import java.nio.file.Files
-import java.util.*
+import java.time.LocalDate
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 
@@ -57,6 +56,8 @@ fun execIgnoreExitValue(action: ExecSpec.() -> Unit) {
 
 allprojects {
     repositories {
+        maven("https://maven.aliyun.com/repository/public")
+        maven("https://mirrors.huaweicloud.com/repository/maven")
         mavenCentral()
         maven("https://packages.jetbrains.team/maven/p/ij/intellij-dependencies")
         maven("https://www.jitpack.io")
@@ -132,7 +133,8 @@ dependencies {
 application {
     val args = mutableListOf(
         "-Xmx2048m",
-        "-Drelease-date=${DateFormatUtils.format(Date(), "yyyy-MM-dd")}",
+        "--enable-native-access=ALL-UNNAMED",
+        "-Drelease-date=${LocalDate.now()}",
         "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005"
     )
 
@@ -379,11 +381,12 @@ tasks.register<Exec>("jpackage") {
     val buildDir = layout.buildDirectory.get()
     val options = mutableListOf(
         "-Xmx2048m",
+        "--enable-native-access=ALL-UNNAMED",
         "-XX:+HeapDumpOnOutOfMemoryError",
         "-Dlogger.console.level=off",
         "-Dkotlinx.coroutines.debug=off",
         "-Dapp-version=${project.version}",
-        "-Drelease-date=${DateFormatUtils.format(Date(), "yyyy-MM-dd")}",
+        "-Drelease-date=${LocalDate.now()}",
         "--add-exports java.base/sun.nio.ch=ALL-UNNAMED",
     )
 

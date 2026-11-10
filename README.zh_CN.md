@@ -90,9 +90,16 @@ Termora 使用 [**Kotlin/JVM**](https://kotlinlang.org/) 开发，支持（正�
 
 ## 🛠️ 开发指南
 
-建议使用 [JetBrainsRuntime](https://github.com/JetBrains/JetBrainsRuntime) JDK 运行环境。
+需要 **JDK 25**，建议使用带有 `bin/javac` 的 [JetBrainsRuntime](https://github.com/JetBrains/JetBrainsRuntime) JDK。将 `JAVA_HOME` 指向 JDK 根目录，并将其 `bin` 目录加入 `PATH`。
 
-- 本地运行：`./gradlew :run`
+- Windows PowerShell 本地运行：`.\gradlew.bat :run`
+- macOS / Linux 本地运行：`./gradlew :run`
+- 检查环境：`./gradlew --version`（Windows 使用 `.\gradlew.bat --version`）。
+- IntelliJ IDEA：Gradle distribution 选择 **Wrapper**，Gradle JVM 选择 **JDK 25**，重新加载 Gradle 项目后选择 **Termora** 运行配置或运行 `run` 任务。自带完整 JBR 25 的 IDEA 可以直接选择其运行时 JDK。
+
+Gradle Wrapper 从华为云镜像下载，并使用官方 SHA-256 校验。Gradle 插件仓库在 `settings.gradle.kts` 中配置，所有模块的依赖仓库在 `build.gradle.kts` 的 `allprojects.repositories` 中统一配置：优先使用阿里云、华为云镜像，未收录的依赖回退至官方仓库。JetBrains、JitPack 等专用仓库仍用于提供特定依赖。
+
+镜像地址是仓库地址，不能配置为 `systemProp.http.proxyHost` 或 `systemProp.https.proxyHost`。如果曾在用户目录下的 `.gradle/gradle.properties` 中将 `mirrors.aliyun.com` 配成代理，应删除这些错误配置，再重新同步项目。
 
 
 ## 📄 授权协议
